@@ -5,3 +5,4 @@ numpy
 uvicorn
 scikit-learn
 tensorflow-cpu
+gunicorn
