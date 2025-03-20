@@ -2,16 +2,10 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
-from tensorflow.keras.optimizers import Adam
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-from sklearn.model_selection import train_test_split
-import warnings
-import os
+from tensorflow.keras.models import load_model
 import tensorflow as tf
-warnings.filterwarnings('ignore')
+import pickle
+import os
 
 # Configure TensorFlow to use CPU only
 os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
@@ -20,75 +14,33 @@ tf.config.set_visible_devices([], 'GPU')
 # Initialize FastAPI app
 app = FastAPI()
 
-# Load the dataset
-file_path = 'cleaned_data.csv'
-data = pd.read_csv(file_path)
-
-# Convert 'Date' and 'Time' columns into a single 'datetime' column
+# Load pre-trained model and scalers
 try:
+    # Define custom objects for loading the model
+    custom_objects = {
+        'MeanSquaredError': tf.keras.losses.MeanSquaredError
+    }
+    
+    model = load_model('lstm_model.h5', custom_objects=custom_objects)
+    with open('scaler_X.pkl', 'rb') as f:
+        scaler_X = pickle.load(f)
+    with open('scaler_y.pkl', 'rb') as f:
+        scaler_y = pickle.load(f)
+    
+    # Load dataset for reference
+    data = pd.read_csv('cleaned_data.csv')
     data['datetime'] = pd.to_datetime(data['Date'] + ' ' + data['Time'], format='%d-%m-%Y %H:%M:%S')
-except ValueError as e:
-    print(f"Error during datetime conversion: {e}. Trying alternative format.")
-    data['datetime'] = pd.to_datetime(data['Date'] + ' ' + data['Time'])  # Let pandas infer the format
-data.set_index('datetime', inplace=True)
-data.drop(['Date', 'Time'], axis=1, inplace=True)
+    data.set_index('datetime', inplace=True)
+    data.drop(['Date', 'Time'], axis=1, inplace=True)
+except Exception as e:
+    print(f"Error loading model and data: {e}")
+    raise
 
-# Define features and target variable
+# Constants
 features_to_forecast = ['AC frequency', 'AC voltage', 'DCLink Voltage', 'Energy today',
-                        'Output current', 'Total Energy', 'output power', 'DC Current',
-                        'Pyranometer', 'Temperature', 'Power Factor']
-target_variable = 'DC Power'
-
-# Scale the data
-scaler_X = MinMaxScaler()
-data[features_to_forecast] = scaler_X.fit_transform(data[features_to_forecast])
-
-scaler_y = MinMaxScaler()
-data[[target_variable]] = scaler_y.fit_transform(data[[target_variable]])
-
-# Function to create sequences for LSTM
-def create_sequences(data, seq_length, features, target):
-    xs, ys = [], []
-    for i in range(len(data) - seq_length):
-        x = data.iloc[i:(i+seq_length)][features].values
-        y = data.iloc[i+seq_length][target]
-        xs.append(x)
-        ys.append(y)
-    return np.array(xs), np.array(ys)
-
-# Set sequence length
+                       'Output current', 'Total Energy', 'output power', 'DC Current',
+                       'Pyranometer', 'Temperature', 'Power Factor']
 seq_length = 10
-
-# Create sequences
-X, y = create_sequences(data, seq_length, features_to_forecast, target_variable)
-
-# Prepare training data for LSTM
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, shuffle=False)
-
-# Define the LSTM model
-model = Sequential()
-model.add(LSTM(50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])))
-model.add(LSTM(50, return_sequences=False))
-model.add(Dense(1))  # Output layer for DC Power prediction
-
-# Compile the model with a lower learning rate
-optimizer = Adam(learning_rate=0.0005)
-model.compile(optimizer=optimizer, loss='mse')
-
-# Train the LSTM model
-model.fit(X_train, y_train, epochs=5, batch_size=32, validation_data=(X_test, y_test))
-
-# Evaluate the LSTM model
-predicted = model.predict(X_test)
-
-# Evaluate metrics
-rmse = np.sqrt(mean_squared_error(y_test, predicted))
-mae = mean_absolute_error(y_test, predicted)
-r2 = r2_score(y_test, predicted)
-
-print(f'LSTM RMSE: {rmse:.3f}')
-print(f'LSTM MAE: {mae:.3f}')
-print(f'LSTM R2 Score: {r2:.3f}')
 
 # Function to find closest datetime in the data index
 def find_closest_datetime(data, forecast_date):
