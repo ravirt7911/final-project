@@ -9,7 +9,13 @@ from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 import warnings
+import os
+import tensorflow as tf
 warnings.filterwarnings('ignore')
+
+# Configure TensorFlow to use CPU only
+os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+tf.config.set_visible_devices([], 'GPU')
 
 # Initialize FastAPI app
 app = FastAPI()
@@ -197,4 +203,22 @@ async def forecast(request: ForecastRequest):
 # Run the server
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    # Add health check endpoint
+    @app.get("/health")
+    async def health_check():
+        return {"status": "healthy"}
+    
+    # Configure host and port
+    port = int(os.getenv("PORT", 8000))
+    
+    # Run with modified settings
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=port,
+        workers=1,  # Reduce workers to avoid GPU conflicts
+        log_level="info",
+        timeout_keep_alive=30,
+        access_log=True
+    )
