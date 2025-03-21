@@ -54,14 +54,85 @@ seq_length = 10
 
 # Function to find closest datetime in the data index
 def find_closest_datetime(data, forecast_date):
-    """Find the closest datetime in the data index to the forecast_date."""
-    abs_diff = abs(data.index - forecast_date)
-    closest_datetime = data.index[abs_diff.argmin()]
+    """Find the closest datetime by matching date and time separately."""
+    
+    if not isinstance(forecast_date, pd.Timestamp):
+        forecast_date = pd.to_datetime(forecast_date)
+    
+    # Get all timestamps and target components
+    timestamps = data.index
+    target_hour = forecast_date.hour
+    
+    # Define time periods (in hours)
+    morning = range(5, 12)      # 5:00 - 11:59
+    afternoon = range(12, 17)   # 12:00 - 16:59
+    evening = range(17, 21)     # 17:00 - 20:59
+    night = list(range(21, 24)) + list(range(0, 5))  # 21:00 - 4:59
+    
+    # Determine target period
+    if target_hour in morning:
+        target_period = morning
+    elif target_hour in afternoon:
+        target_period = afternoon
+    elif target_hour in evening:
+        target_period = evening
+    else:
+        target_period = night
+    
+    # Convert timestamps to pandas DatetimeIndex if not already
+    if not isinstance(timestamps, pd.DatetimeIndex):
+        timestamps = pd.DatetimeIndex(timestamps)
+    
+    # Find dates within ±5 days
+    date_mask = (timestamps >= forecast_date - pd.Timedelta(days=5)) & \
+                (timestamps <= forecast_date + pd.Timedelta(days=5))
+    nearby_dates = timestamps[date_mask]
+    
+    if len(nearby_dates) > 0:
+        # Filter for same time period
+        same_period_mask = pd.Series([ts.hour in target_period for ts in nearby_dates])
+        period_matches = nearby_dates[same_period_mask]
+        
+        if len(period_matches) > 0:
+            # Find closest time within period matches
+            time_diffs = abs(period_matches - forecast_date)
+            closest_datetime = period_matches[time_diffs.argmin()]
+        else:
+            # If no period matches, use closest nearby date
+            time_diffs = abs(nearby_dates - forecast_date)
+            closest_datetime = nearby_dates[time_diffs.argmin()]
+            
+        # Calculate differences for display
+        time_diff_hours = abs(closest_datetime - forecast_date).total_seconds() / 3600
+        date_diff_days = abs(closest_datetime.date() - forecast_date.date()).days
+        
+        print(f"\nRequested datetime: {forecast_date}")
+        print(f"Closest match found:")
+        print(f"Date: {closest_datetime.date()} (diff: {date_diff_days} days)")
+        print(f"Time: {closest_datetime.time()} (diff: {time_diff_hours:.2f} hours)")
+    else:
+        # If no nearby dates, find closest match in same time period
+        same_period_mask = pd.Series([ts.hour in target_period for ts in timestamps])
+        period_matches = timestamps[same_period_mask]
+        
+        if len(period_matches) > 0:
+            time_diffs = abs(period_matches - forecast_date)
+            closest_datetime = period_matches[time_diffs.argmin()]
+        else:
+            time_diffs = abs(timestamps - forecast_date)
+            closest_datetime = timestamps[time_diffs.argmin()]
+        
+        print(f"\nNo nearby dates found within ±5 days.")
+        print(f"Using closest available datetime: {closest_datetime}")
+    
     return closest_datetime
 
 # Function to forecast features for a given date
 def forecast_for_date(model, data, scaler_X, scaler_y, seq_length, forecast_date, features_to_forecast):
     """Forecast the features based on a given date."""
+    
+    # Initialize actual_values variable
+    actual_values = None
     
     # Print dataset date range
     print(f"\nDataset covers: {data.index.min()} to {data.index.max()}")
@@ -76,9 +147,10 @@ def forecast_for_date(model, data, scaler_X, scaler_y, seq_length, forecast_date
         print("\nFeature values for requested date:")
         print("-" * 50)
         
-        # Get actual values for the exact date
+        # Get raw values without scaling
         exact_values = data[features_to_forecast].loc[forecast_date].values.reshape(1, -1)
-        actual_values = scaler_X.inverse_transform(exact_values)[0]
+        # Don't apply inverse_transform here since these are raw values
+        actual_values = exact_values[0]
         
         for feature, value in zip(features_to_forecast, actual_values):
             print(f"{feature:20}: {value:,.4f}")
@@ -91,10 +163,12 @@ def forecast_for_date(model, data, scaler_X, scaler_y, seq_length, forecast_date
         
         print("\nFeature values for closest date:")
         print("-" * 50)
+        # Get raw values without scaling
         closest_values = data[features_to_forecast].loc[closest_datetime].values.reshape(1, -1)
-        original_values = scaler_X.inverse_transform(closest_values)[0]
+        # Don't apply inverse_transform here since these are raw values
+        actual_values = closest_values[0]
         
-        for feature, value in zip(features_to_forecast, original_values):
+        for feature, value in zip(features_to_forecast, actual_values):
             print(f"{feature:20}: {value:,.4f}")
     
     print("-" * 50)
@@ -108,7 +182,13 @@ def forecast_for_date(model, data, scaler_X, scaler_y, seq_length, forecast_date
     predicted = model.predict(historical_sequence, verbose=0)
     predicted_original_scale = scaler_y.inverse_transform(predicted)
 
-    return predicted_original_scale[0, 0]
+    # Create features dictionary with actual values
+    feature_values = {
+        feature: float(value) 
+        for feature, value in zip(features_to_forecast, actual_values)
+    }
+
+    return predicted_original_scale[0, 0], feature_values
 
 # Define request body schema using Pydantic
 class ForecastRequest(BaseModel):
@@ -143,7 +223,7 @@ async def forecast(request: ForecastRequest):
         }
 
         # Get prediction
-        predicted_dc_power = forecast_for_date(
+        predicted_dc_power, feature_values = forecast_for_date(
             model=model,
             data=data,
             scaler_X=scaler_X,
